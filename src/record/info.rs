@@ -1,3 +1,9 @@
+//! Bit positions mirror Tsavorite's `RecordInfo`.
+//! Grossular currently uses previous address, tombstone, and valid state only.
+//!
+//! Reference: `Tsavorite/cs/src/core/Index/Common/RecordInfo.cs`
+//! at Garnet commit `c9607605baa4`.
+
 use crate::address::Address;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

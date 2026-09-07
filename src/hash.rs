@@ -1,3 +1,8 @@
+//! Port of Tsavorite's `Utility.HashBytes`.
+//!
+//! Reference: `Tsavorite/cs/src/core/Utilities/Utility.cs`
+//! at Garnet commit `c9607605baa4`.
+
 const HASH_MULTIPLIER: u64 = 40_343;
 
 pub(crate) fn hash(key: &[u8]) -> u64 {
