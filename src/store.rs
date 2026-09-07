@@ -14,19 +14,15 @@ impl Store {
     }
 
     pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
-        let mut address = self.index.head(hash(key));
+        let hash = hash(key);
+        let address = self.find_address(hash, key)?;
+        let record = self.log.read(address);
 
-        while address != Address::INVALID {
-            let record = self.log.read(address);
-
-            if record.key == key {
-                return Some(record.value);
-            }
-
-            address = record.previous;
+        if record.is_tombstone() {
+            None
+        } else {
+            Some(record.value)
         }
-
-        None
     }
 
     pub fn upsert(&mut self, key: &[u8], value: &[u8]) {
@@ -35,6 +31,22 @@ impl Store {
         let address = self.log.append(previous, key, value);
 
         self.index.set_head(hash, address);
+    }
+
+    fn find_address(&self, hash: u64, key: &[u8]) -> Option<Address> {
+        let mut address = self.index.head(hash);
+
+        while address != Address::INVALID {
+            let record = self.log.read(address);
+
+            if record.key == key {
+                return Some(address);
+            }
+
+            address = record.previous();
+        }
+
+        None
     }
 }
 
