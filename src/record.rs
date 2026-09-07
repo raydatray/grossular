@@ -12,27 +12,15 @@ pub struct RecordRef<'a> {
 
 pub(crate) fn encoded_len(key_len: usize, value_len: usize) -> usize {
     assert!(
-        u32::try_from(key_len).is_ok(),
+        key_len <= u32::MAX as usize,
         "key length exceeds the record format"
     );
     assert!(
-        u32::try_from(value_len).is_ok(),
+        value_len <= u32::MAX as usize,
         "value length exceeds the record format"
     );
 
-    let body_len = key_len
-        .checked_add(value_len)
-        .expect("record body length overflow");
-
-    let unaligned_len = HEADER_SIZE
-        .checked_add(body_len)
-        .expect("record length overflow");
-
-    let padding = (ALIGNMENT - unaligned_len % ALIGNMENT) % ALIGNMENT;
-
-    unaligned_len
-        .checked_add(padding)
-        .expect("aligned record length overflow")
+    (HEADER_SIZE + key_len + value_len).next_multiple_of(ALIGNMENT)
 }
 
 pub(crate) fn encode(destination: &mut [u8], previous: Address, key: &[u8], value: &[u8]) {
@@ -45,32 +33,30 @@ pub(crate) fn encode(destination: &mut [u8], previous: Address, key: &[u8], valu
     );
 
     let key_len = u32::try_from(key.len()).expect("key length exceeds the record format");
-
     let value_len = u32::try_from(value.len()).expect("value length exceeds the record format");
 
-    destination.fill(0);
+    let (header, payload) = destination.split_at_mut(HEADER_SIZE);
 
-    destination[0..8].copy_from_slice(&previous.as_raw().to_le_bytes());
-    destination[8..12].copy_from_slice(&key_len.to_le_bytes());
-    destination[12..16].copy_from_slice(&value_len.to_le_bytes());
+    header[0..8].copy_from_slice(&previous.as_raw().to_le_bytes());
+    header[8..12].copy_from_slice(&key_len.to_le_bytes());
+    header[12..16].copy_from_slice(&value_len.to_le_bytes());
 
-    let key_start = HEADER_SIZE;
-    let key_end = key_start + key.len();
-    let value_end = key_end + value.len();
+    let (key_destination, remaining) = payload.split_at_mut(key.len());
+    let (value_destination, padding) = remaining.split_at_mut(value.len());
 
-    destination[key_start..key_end].copy_from_slice(key);
-    destination[key_end..value_end].copy_from_slice(value);
+    key_destination.copy_from_slice(key);
+    value_destination.copy_from_slice(value);
+    padding.fill(0);
 }
 
 pub(crate) fn decode(buffer: &[u8], offset: usize) -> RecordRef<'_> {
     assert_eq!(offset % ALIGNMENT, 0, "record address is not aligned");
 
-    let header_end = offset
-        .checked_add(HEADER_SIZE)
-        .expect("record header offset overflow");
-
-    let header = buffer
-        .get(offset..header_end)
+    let record = buffer
+        .get(offset..)
+        .expect("record address extends past the log");
+    let header = record
+        .get(..HEADER_SIZE)
         .expect("record header extends past the log");
 
     let previous = Address::from_raw(u64::from_le_bytes(
@@ -93,19 +79,16 @@ pub(crate) fn decode(buffer: &[u8], offset: usize) -> RecordRef<'_> {
 
     let record_len = encoded_len(key_len, value_len);
 
-    let record_end = offset.checked_add(record_len).expect("record end overflow");
+    assert!(record_len <= record.len(), "record extends past the log");
 
-    assert!(record_end <= buffer.len(), "record extends past the log");
-
-    let key_start = header_end;
-    let key_end = key_start.checked_add(key_len).expect("key end overflow");
-
-    let value_end = key_end.checked_add(value_len).expect("value end overflow");
+    let payload = &record[HEADER_SIZE..record_len];
+    let (key, remaining) = payload.split_at(key_len);
+    let (value, _) = remaining.split_at(value_len);
 
     RecordRef {
         previous,
-        key: &buffer[key_start..key_end],
-        value: &buffer[key_end..value_end],
+        key,
+        value,
     }
 }
 
@@ -164,7 +147,7 @@ mod tests {
         let value = b"bc";
         let length = encoded_len(key.len(), value.len());
 
-        // Fill with a nonzero value so the test proves encode clears padding.
+        // fill with a nonzero value so the test proves encode clears padding
         let mut destination = vec![0xff; length];
 
         encode(&mut destination, Address::INVALID, key, value);
