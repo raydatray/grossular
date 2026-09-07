@@ -1,4 +1,4 @@
-use crate::{address::Address, hash::hash, index::Index, log::Log};
+use crate::{address::Address, hash::hash, index::Index, log::Log, record::RecordRef};
 
 pub struct Store {
     index: Index,
@@ -15,8 +15,7 @@ impl Store {
 
     pub fn get(&self, key: &[u8]) -> Option<&[u8]> {
         let hash = hash(key);
-        let address = self.find_address(hash, key)?;
-        let record = self.log.read(address);
+        let (_, record) = self.find_record(hash, key)?;
 
         if record.is_tombstone() {
             None
@@ -36,30 +35,30 @@ impl Store {
     pub fn delete(&mut self, key: &[u8]) -> bool {
         let hash = hash(key);
 
-        let Some(current) = self.find_address(hash, key) else {
+        let Some((_, record)) = self.find_record(hash, key) else {
             return false;
         };
 
-        if self.log.read(current).is_tombstone() {
+        if record.is_tombstone() {
             return false;
         }
 
         let previous = self.index.head(hash);
-        let address = self.log.append_tombstone(previous, key);
+        let tombstone = self.log.append_tombstone(previous, key);
 
-        self.index.set_head(hash, address);
+        self.index.set_head(hash, tombstone);
 
         true
     }
 
-    fn find_address(&self, hash: u64, key: &[u8]) -> Option<Address> {
+    fn find_record(&self, hash: u64, key: &[u8]) -> Option<(Address, RecordRef<'_>)> {
         let mut address = self.index.head(hash);
 
         while address != Address::INVALID {
             let record = self.log.read(address);
 
             if record.key == key {
-                return Some(address);
+                return Some((address, record));
             }
 
             address = record.previous();
