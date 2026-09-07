@@ -1,3 +1,9 @@
+//! Uses the bit positions from Tsavorite's `RecordDataHeader`.
+//! Grossular currently implements only inline keys, inline values, and filler.
+//!
+//! Reference: `Tsavorite/cs/src/core/Allocator/RecordDataHeader.cs`
+//! at Garnet commit `c9607605baa4`.
+
 use super::{ALIGNMENT, HEADER_SIZE};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
