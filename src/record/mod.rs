@@ -2,49 +2,69 @@ mod data_header;
 mod info;
 
 use crate::address::Address;
+use data_header::RecordDataHeader;
+use info::RecordInfo;
 
 pub const HEADER_SIZE: usize = 16;
 pub const ALIGNMENT: usize = 8;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RecordKind {
+    Value,
+    Tombstone,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordRef<'a> {
-    pub previous: Address,
-    pub key: &'a [u8],
-    pub value: &'a [u8],
+    info: RecordInfo,
+    data_header: RecordDataHeader,
+    pub(crate) key: &'a [u8],
+    pub(crate) value: &'a [u8],
 }
 
-pub(crate) fn encoded_len(key_len: usize, value_len: usize) -> usize {
-    assert!(
-        key_len <= u32::MAX as usize,
-        "key length exceeds the record format"
-    );
-    assert!(
-        value_len <= u32::MAX as usize,
-        "value length exceeds the record format"
-    );
+impl RecordRef<'_> {
+    pub(crate) const fn previous(self) -> Address {
+        self.info.previous()
+    }
 
-    (HEADER_SIZE + key_len + value_len).next_multiple_of(ALIGNMENT)
+    pub(crate) const fn is_tombstone(self) -> bool {
+        self.info.is_tombstone()
+    }
 }
 
-pub(crate) fn encode(destination: &mut [u8], previous: Address, key: &[u8], value: &[u8]) {
-    let required_len = encoded_len(key.len(), value.len());
+pub(crate) const fn encoded_len(key_len: usize, value_len: usize) -> usize {
+    RecordDataHeader::new_inline(key_len, value_len).allocated_len()
+}
+
+pub(crate) fn encode(
+    destination: &mut [u8],
+    previous: Address,
+    kind: RecordKind,
+    key: &[u8],
+    value: &[u8],
+) {
+    let tombstone = matches!(kind, RecordKind::Tombstone);
+
+    if tombstone {
+        assert!(value.is_empty(), "tombstone records cannot contain a value");
+    }
+
+    let info = RecordInfo::new_valid(previous, tombstone);
+    let data_header = RecordDataHeader::new_inline(key.len(), value.len());
 
     assert_eq!(
         destination.len(),
-        required_len,
-        "record destination has the wrong length"
+        data_header.allocated_len(),
+        "record destination has wrong length"
     );
-
-    let key_len = u32::try_from(key.len()).expect("key length exceeds the record format");
-    let value_len = u32::try_from(value.len()).expect("value length exceeds the record format");
 
     let (header, payload) = destination.split_at_mut(HEADER_SIZE);
 
-    header[0..8].copy_from_slice(&previous.as_raw().to_le_bytes());
-    header[8..12].copy_from_slice(&key_len.to_le_bytes());
-    header[12..16].copy_from_slice(&value_len.to_le_bytes());
+    header[0..8].copy_from_slice(&info.as_raw().to_le_bytes());
+    header[8..16].copy_from_slice(&data_header.as_raw().to_le_bytes());
 
     let (key_destination, remaining) = payload.split_at_mut(key.len());
+
     let (value_destination, padding) = remaining.split_at_mut(value.len());
 
     key_destination.copy_from_slice(key);
@@ -58,38 +78,34 @@ pub(crate) fn decode(buffer: &[u8], offset: usize) -> RecordRef<'_> {
     let record = buffer
         .get(offset..)
         .expect("record address extends past the log");
+
     let header = record
         .get(..HEADER_SIZE)
         .expect("record header extends past the log");
 
-    let previous = Address::from_raw(u64::from_le_bytes(
-        header[0..8]
-            .try_into()
-            .expect("previous address has the wrong length"),
-    ));
+    let info = RecordInfo::from_raw(u64::from_le_bytes(header[0..8].try_into().unwrap()));
 
-    let key_len = u32::from_le_bytes(
-        header[8..12]
-            .try_into()
-            .expect("key length has the wrong length"),
-    ) as usize;
+    let data_header =
+        RecordDataHeader::from_raw(u64::from_le_bytes(header[8..16].try_into().unwrap()));
 
-    let value_len = u32::from_le_bytes(
-        header[12..16]
-            .try_into()
-            .expect("value length has the wrong length"),
-    ) as usize;
+    assert!(info.is_valid(), "record is invalid");
+    assert!(data_header.key_is_inline(), "overflow keys not supported");
+    assert!(
+        data_header.value_is_inline(),
+        "overflow values not supported"
+    );
 
-    let record_len = encoded_len(key_len, value_len);
+    let record_len = data_header.allocated_len();
 
     assert!(record_len <= record.len(), "record extends past the log");
 
     let payload = &record[HEADER_SIZE..record_len];
-    let (key, remaining) = payload.split_at(key_len);
-    let (value, _) = remaining.split_at(value_len);
+    let (key, remaining) = payload.split_at(data_header.key_len());
+    let (value, _) = remaining.split_at(data_header.value_len());
 
     RecordRef {
-        previous,
+        info,
+        data_header,
         key,
         value,
     }
@@ -135,13 +151,65 @@ mod tests {
 
         buffer.resize(offset + length, 0);
 
-        encode(&mut buffer[offset..offset + length], previous, key, value);
+        encode(
+            &mut buffer[offset..offset + length],
+            previous,
+            RecordKind::Value,
+            key,
+            value,
+        );
 
         let record = decode(&buffer, offset);
 
-        assert_eq!(record.previous, previous);
+        assert_eq!(record.previous(), previous);
+        assert!(!record.is_tombstone());
         assert_eq!(record.key, key);
         assert_eq!(record.value, value);
+    }
+
+    #[test]
+    fn tombstone_round_trips() {
+        let previous = Address::from_offset(128);
+        let key = b"hello";
+        let length = encoded_len(key.len(), 0);
+        let offset = Address::FIRST_VALID.as_offset();
+        let mut buffer = vec![0; offset + length];
+
+        encode(
+            &mut buffer[offset..offset + length],
+            previous,
+            RecordKind::Tombstone,
+            key,
+            &[],
+        );
+
+        let record = decode(&buffer, offset);
+
+        assert_eq!(record.previous(), previous);
+        assert!(record.is_tombstone());
+        assert_eq!(record.key, key);
+        assert!(record.value.is_empty());
+    }
+
+    #[test]
+    fn empty_value_is_not_a_tombstone() {
+        let key = b"hello";
+        let length = encoded_len(key.len(), 0);
+        let offset = Address::FIRST_VALID.as_offset();
+        let mut buffer = vec![0; offset + length];
+
+        encode(
+            &mut buffer[offset..offset + length],
+            Address::INVALID,
+            RecordKind::Value,
+            key,
+            &[],
+        );
+
+        let record = decode(&buffer, offset);
+
+        assert!(!record.is_tombstone());
+        assert!(record.value.is_empty());
     }
 
     #[test]
@@ -153,7 +221,13 @@ mod tests {
         // fill with a nonzero value so the test proves encode clears padding
         let mut destination = vec![0xff; length];
 
-        encode(&mut destination, Address::INVALID, key, value);
+        encode(
+            &mut destination,
+            Address::INVALID,
+            RecordKind::Value,
+            key,
+            value,
+        );
 
         let data_end = HEADER_SIZE + key.len() + value.len();
 
@@ -174,17 +248,36 @@ mod tests {
                 encode(
                     &mut buffer[offset..offset + length],
                     Address::INVALID,
+                    RecordKind::Value,
                     &key,
                     &value,
                 );
 
                 let record = decode(&buffer, offset);
 
-                assert_eq!(record.previous, Address::INVALID);
+                assert_eq!(record.previous(), Address::INVALID);
+                assert!(!record.is_tombstone());
                 assert_eq!(record.key, key);
                 assert_eq!(record.value, value);
             }
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "tombstone records cannot contain a value")]
+    fn rejects_tombstone_with_value() {
+        let key = b"hello";
+        let value = b"value";
+        let length = encoded_len(key.len(), value.len());
+        let mut destination = vec![0; length];
+
+        encode(
+            &mut destination,
+            Address::INVALID,
+            RecordKind::Tombstone,
+            key,
+            value,
+        );
     }
 
     #[test]
@@ -203,9 +296,11 @@ mod tests {
     #[should_panic(expected = "record extends past the log")]
     fn rejects_truncated_body() {
         let mut buffer = vec![0; HEADER_SIZE];
+        let info = RecordInfo::new_valid(Address::INVALID, false);
+        let data_header = RecordDataHeader::new_inline(10, 20);
 
-        buffer[8..12].copy_from_slice(&10_u32.to_le_bytes());
-        buffer[12..16].copy_from_slice(&20_u32.to_le_bytes());
+        buffer[0..8].copy_from_slice(&info.as_raw().to_le_bytes());
+        buffer[8..16].copy_from_slice(&data_header.as_raw().to_le_bytes());
 
         decode(&buffer, 0);
     }
