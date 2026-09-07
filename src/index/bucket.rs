@@ -1,3 +1,13 @@
+//! Tag positions and cache-line bucket shape mirror Tsavorite's hash index.
+//! Grossular currently reserves, but does not represent, the read-cache address bit.
+//!
+//! References:
+//! - `Tsavorite/cs/src/core/Index/Tsavorite/HashBucketEntry.cs`
+//! - `Tsavorite/cs/src/core/Index/Tsavorite/HashBucket.cs`
+//! - `Tsavorite/cs/src/core/Index/Tsavorite/Constants.cs`
+//!
+//! Garnet commit: `c9607605baa4`.
+
 use crate::address::Address;
 
 pub(super) const ENTRIES_PER_BUCKET: usize = 7;

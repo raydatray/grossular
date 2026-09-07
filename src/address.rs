@@ -1,3 +1,9 @@
+//! Absolute address range and sentinels follow Tsavorite's `LogAddress`.
+//! Grossular does not yet represent the read-cache marker in bit 47.
+//!
+//! Reference: `Tsavorite/cs/src/core/Index/Common/LogAddress.cs`
+//! at Garnet commit `c9607605baa4`.
+
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
