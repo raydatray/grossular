@@ -6,3 +6,6 @@ mod hash;
 mod index;
 mod log;
 mod record;
+mod store;
+
+pub use store::Store;
