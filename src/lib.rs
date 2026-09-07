@@ -2,4 +2,5 @@
 compile_error!("Grossular currently requires a 64-bit target");
 
 mod address;
+mod log;
 mod record;
