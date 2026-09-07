@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod bucket;
+
 use crate::address::Address;
 
 pub(crate) struct Index {
@@ -33,76 +36,9 @@ impl Index {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[repr(transparent)]
-struct HashEntry(u64);
-
-impl HashEntry {
-    const ADDRESS_MASK: u64 = (1_u64 << 47) - 1;
-    const TAG_SHIFT: u32 = 48;
-    const TAG_MASK: u64 = (1_u64 << 15) - 1;
-
-    const EMPTY: Self = Self(0);
-
-    fn new(tag: u16, address: Address) -> Self {
-        assert!(address != Address::INVALID);
-        assert!(u64::from(tag) <= Self::TAG_MASK);
-
-        Self((u64::from(tag) << Self::TAG_SHIFT) | address.as_raw())
-    }
-
-    fn is_empty(self) -> bool {
-        self == Self::EMPTY
-    }
-
-    fn tag(self) -> u16 {
-        ((self.0 >> Self::TAG_SHIFT) & Self::TAG_MASK) as u16
-    }
-
-    fn address(self) -> Address {
-        Address::from_raw(self.0 & Self::ADDRESS_MASK)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hash_entry_is_one_word() {
-        assert_eq!(size_of::<HashEntry>(), size_of::<u64>());
-    }
-
-    #[test]
-    fn empty_hash_entry_has_no_address() {
-        assert!(HashEntry::EMPTY.is_empty());
-        assert_eq!(HashEntry::EMPTY.address(), Address::INVALID);
-    }
-
-    #[test]
-    fn hash_entry_round_trips_tag_and_address() {
-        let address = Address::from_offset(128);
-        let entry = HashEntry::new(0x1234, address);
-
-        assert!(!entry.is_empty());
-        assert_eq!(entry.tag(), 0x1234);
-        assert_eq!(entry.address(), address);
-    }
-
-    #[test]
-    fn hash_entry_accepts_the_largest_tag() {
-        let address = Address::from_offset(128);
-        let entry = HashEntry::new(HashEntry::TAG_MASK as u16, address);
-
-        assert_eq!(entry.tag(), HashEntry::TAG_MASK as u16);
-        assert_eq!(entry.address(), address);
-    }
-
-    #[test]
-    #[should_panic]
-    fn hash_entry_rejects_an_invalid_address() {
-        HashEntry::new(1, Address::INVALID);
-    }
 
     #[test]
     fn starts_with_invalid_heads() {
