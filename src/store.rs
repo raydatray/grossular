@@ -33,6 +33,25 @@ impl Store {
         self.index.set_head(hash, address);
     }
 
+    pub fn delete(&mut self, key: &[u8]) -> bool {
+        let hash = hash(key);
+
+        let Some(current) = self.find_address(hash, key) else {
+            return false;
+        };
+
+        if self.log.read(current).is_tombstone() {
+            return false;
+        }
+
+        let previous = self.index.head(hash);
+        let address = self.log.append_tombstone(previous, key);
+
+        self.index.set_head(hash, address);
+
+        true
+    }
+
     fn find_address(&self, hash: u64, key: &[u8]) -> Option<Address> {
         let mut address = self.index.head(hash);
 
@@ -53,6 +72,15 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn same_tag_keys() -> ([u8; 8], [u8; 8]) {
+        let first = 1_u64.to_le_bytes();
+        let second = 7_313_u64.to_le_bytes();
+
+        assert_eq!(hash(&first) >> 49, hash(&second) >> 49);
+
+        (first, second)
+    }
 
     #[test]
     fn missing_key_returns_none() {
@@ -125,5 +153,90 @@ mod tests {
 
         assert_eq!(store.get(b""), Some(b"".as_slice()));
         assert_eq!(store.get(b"key"), Some(b"".as_slice()));
+    }
+
+    #[test]
+    fn deletes_existing_key() {
+        let mut store = Store::new(8);
+        store.upsert(b"foo", b"value");
+
+        assert!(store.delete(b"foo"));
+        assert_eq!(store.get(b"foo"), None);
+    }
+
+    #[test]
+    fn deleting_missing_key_returns_false() {
+        let mut store = Store::new(8);
+
+        assert!(!store.delete(b"missing"));
+    }
+
+    #[test]
+    fn repeated_delete_returns_false() {
+        let mut store = Store::new(8);
+        store.upsert(b"foo", b"value");
+
+        assert!(store.delete(b"foo"));
+        assert!(!store.delete(b"foo"));
+    }
+
+    #[test]
+    fn upsert_after_delete_restores_key() {
+        let mut store = Store::new(8);
+        store.upsert(b"foo", b"old");
+        store.delete(b"foo");
+
+        store.upsert(b"foo", b"new");
+
+        assert_eq!(store.get(b"foo"), Some(b"new".as_slice()));
+    }
+
+    #[test]
+    fn deleting_one_key_preserves_colliding_keys() {
+        let mut store = Store::new(1);
+        store.upsert(b"foo", b"foo-value");
+        store.upsert(b"bar", b"bar-value");
+
+        assert!(store.delete(b"foo"));
+        assert_eq!(store.get(b"foo"), None);
+        assert_eq!(store.get(b"bar"), Some(b"bar-value".as_slice()));
+    }
+
+    #[test]
+    fn different_keys_with_the_same_tag_remain_readable() {
+        let mut store = Store::new(1);
+        let (first, second) = same_tag_keys();
+
+        store.upsert(&first, b"first-value");
+        store.upsert(&second, b"second-value");
+
+        assert_eq!(store.get(&first), Some(b"first-value".as_slice()));
+        assert_eq!(store.get(&second), Some(b"second-value".as_slice()));
+    }
+
+    #[test]
+    fn updating_one_same_tag_key_preserves_the_other() {
+        let mut store = Store::new(1);
+        let (first, second) = same_tag_keys();
+
+        store.upsert(&first, b"first-old");
+        store.upsert(&second, b"second-value");
+        store.upsert(&first, b"first-new");
+
+        assert_eq!(store.get(&first), Some(b"first-new".as_slice()));
+        assert_eq!(store.get(&second), Some(b"second-value".as_slice()));
+    }
+
+    #[test]
+    fn deleting_one_same_tag_key_preserves_the_other() {
+        let mut store = Store::new(1);
+        let (first, second) = same_tag_keys();
+
+        store.upsert(&first, b"first-value");
+        store.upsert(&second, b"second-value");
+
+        assert!(store.delete(&first));
+        assert_eq!(store.get(&first), None);
+        assert_eq!(store.get(&second), Some(b"second-value".as_slice()));
     }
 }
