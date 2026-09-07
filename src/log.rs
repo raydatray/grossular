@@ -1,6 +1,6 @@
 use crate::{
     address::Address,
-    record::{self, RecordRef},
+    record::{self, RecordKind, RecordRef},
 };
 
 pub(crate) struct Log {
@@ -25,25 +25,11 @@ impl Log {
     }
 
     pub(crate) fn append(&mut self, previous: Address, key: &[u8], value: &[u8]) -> Address {
-        let address = self.tail();
+        self.append_record(previous, RecordKind::Value, key, value)
+    }
 
-        assert!(
-            previous == Address::INVALID || previous.as_offset() < address.as_offset(),
-            "previous address must refer to an older record"
-        );
-
-        let length = record::encoded_len(key.len(), value.len());
-        let start = self.buffer.len();
-        let end = start + length;
-
-        // validate that the resulting tail is representable
-        Address::from_offset(end);
-
-        self.buffer.resize(end, 0);
-
-        record::encode(&mut self.buffer[start..end], previous, key, value);
-
-        address
+    pub(crate) fn append_tombstone(&mut self, previous: Address, key: &[u8]) -> Address {
+        self.append_record(previous, RecordKind::Tombstone, key, &[])
     }
 
     pub(crate) fn read(&self, address: Address) -> RecordRef<'_> {
@@ -57,6 +43,33 @@ impl Log {
         );
 
         record::decode(&self.buffer, offset)
+    }
+
+    fn append_record(
+        &mut self,
+        previous: Address,
+        kind: RecordKind,
+        key: &[u8],
+        value: &[u8],
+    ) -> Address {
+        let address = self.tail();
+
+        assert!(
+            previous == Address::INVALID || previous.as_offset() < address.as_offset(),
+            "previous address must refer to an older record"
+        );
+
+        let length = record::encoded_len(key.len(), value.len());
+        let start = self.buffer.len();
+        let end = start + length;
+
+        Address::from_offset(end);
+
+        self.buffer.resize(end, 0);
+
+        record::encode(&mut self.buffer[start..end], previous, kind, key, value);
+
+        address
     }
 }
 
@@ -79,9 +92,24 @@ mod tests {
         let record = log.read(address);
 
         assert_eq!(address, Address::FIRST_VALID);
-        assert_eq!(record.previous, Address::INVALID);
+        assert_eq!(record.previous(), Address::INVALID);
+        assert!(!record.is_tombstone());
         assert_eq!(record.key, b"foo");
         assert_eq!(record.value, b"one");
+    }
+
+    #[test]
+    fn appends_and_reads_tombstone() {
+        let mut log = Log::new();
+        let previous = log.append(Address::INVALID, b"foo", b"one");
+
+        let address = log.append_tombstone(previous, b"foo");
+        let record = log.read(address);
+
+        assert_eq!(record.previous(), previous);
+        assert!(record.is_tombstone());
+        assert_eq!(record.key, b"foo");
+        assert!(record.value.is_empty());
     }
 
     #[test]
@@ -108,9 +136,9 @@ mod tests {
         let second = log.append(first, b"foo", b"two");
         let third = log.append(second, b"foo", b"three");
 
-        assert_eq!(log.read(third).previous, second);
-        assert_eq!(log.read(second).previous, first);
-        assert_eq!(log.read(first).previous, Address::INVALID);
+        assert_eq!(log.read(third).previous(), second);
+        assert_eq!(log.read(second).previous(), first);
+        assert_eq!(log.read(first).previous(), Address::INVALID);
     }
 
     #[test]
